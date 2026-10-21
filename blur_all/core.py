@@ -51,6 +51,7 @@ class Settings:
     margin: float = 0.3
     keep_audio: bool = True
     manual_regions: tuple[Region, ...] = ()
+    effect: str = "blur"
 
 
 @dataclass(frozen=True)
@@ -116,22 +117,65 @@ def overlap(a: Box, b: Box) -> float:
 
 
 class FaceHold:
-    """Keep unmatched detections briefly to reduce single-frame detection flicker."""
+    """Follow recent boxes with optical flow during short detection dropouts."""
 
     def __init__(self, frames: int):
         self.frames = frames
         self.previous: list[tuple[Box, int]] = []
         self.last_thumbnail: np.ndarray | None = None
+        self.last_gray: np.ndarray | None = None
+
+    def _move_boxes(self, gray: np.ndarray, scale: float, width: int, height: int):
+        if self.last_gray is None or self.last_gray.shape != gray.shape or not self.previous:
+            return self.previous
+        mask = np.zeros_like(gray)
+        for (x, y, w, h), _ in self.previous:
+            left, top = max(0, round(x * scale)), max(0, round(y * scale))
+            right, bottom = min(gray.shape[1], round((x + w) * scale)), min(gray.shape[0], round((y + h) * scale))
+            mask[top:bottom, left:right] = 255
+        points = cv2.goodFeaturesToTrack(self.last_gray, 200, 0.01, 3, mask=mask)
+        if points is None:
+            return self.previous
+        moved, status, _ = cv2.calcOpticalFlowPyrLK(self.last_gray, gray, points, None)
+        if moved is None or status is None:
+            return self.previous
+        returned, back_status, _ = cv2.calcOpticalFlowPyrLK(gray, self.last_gray, moved, None)
+        if returned is None or back_status is None:
+            return self.previous
+        before, after = points.reshape(-1, 2) / scale, moved.reshape(-1, 2) / scale
+        valid = (status.ravel() == 1) & (back_status.ravel() == 1)
+        valid &= np.linalg.norm(points.reshape(-1, 2) - returned.reshape(-1, 2), axis=1) < 1.5
+        result = []
+        for box, ttl in self.previous:
+            x, y, w, h = box
+            inside = valid & (before[:, 0] >= x) & (before[:, 0] <= x + w)
+            inside &= (before[:, 1] >= y) & (before[:, 1] <= y + h)
+            if inside.sum() >= 4:
+                shifts = after[inside] - before[inside]
+                dx, dy = np.median(shifts, axis=0)
+                # Reject implausible jumps; short-term flow is only a fallback.
+                if abs(dx) <= max(20, w * 0.75) and abs(dy) <= max(20, h * 0.75):
+                    left, top = max(0, round(x + dx)), max(0, round(y + dy))
+                    right, bottom = min(width, round(x + w + dx)), min(height, round(y + h + dy))
+                    if right > left and bottom > top:
+                        box = (left, top, right - left, bottom - top)
+            result.append((box, ttl))
+        return result
 
     def update(self, boxes: list[Box], frame: np.ndarray) -> list[Box]:
-        thumbnail = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (32, 32))
+        height, width = frame.shape[:2]
+        scale = min(1.0, 640 / max(width, height))
+        gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (max(1, round(width * scale)), max(1, round(height * scale))))
+        thumbnail = cv2.resize(gray, (32, 32))
         if self.last_thumbnail is not None:
             change = np.abs(thumbnail.astype(float) - self.last_thumbnail).mean()
             if change > 35:  # Avoid carrying old boxes over a hard scene cut.
                 self.previous.clear()
         self.last_thumbnail = thumbnail
+        predicted = self._move_boxes(gray, scale, width, height)
+        self.last_gray = gray
         retained = [
-            (old, ttl - 1) for old, ttl in self.previous
+            (old, ttl - 1) for old, ttl in predicted
             if ttl > 1 and not any(overlap(old, new) > 0.2 for new in boxes)
         ]
         self.previous = [(box, self.frames) for box in boxes] + retained
@@ -152,13 +196,17 @@ def blur_frame(frame: np.ndarray, boxes: list[Box], settings: Settings) -> np.nd
         right, bottom = min(width, right), min(height, bottom)
         if right <= left or bottom <= top:
             continue
-        roi = frame[top:bottom, left:right]
+        roi = result[top:bottom, left:right]
+        if settings.effect == "solid":
+            result[top:bottom, left:right] = (18, 18, 18)
+            continue
         # Destroy detail before smoothing; a larger strength retains fewer samples.
         samples = max(2, round(22 - settings.strength * 0.2))
         tiny = cv2.resize(roi, (min(samples, right - left), min(samples, bottom - top)), interpolation=cv2.INTER_AREA)
-        obscured = cv2.resize(tiny, (right - left, bottom - top), interpolation=cv2.INTER_LINEAR)
+        interpolation = cv2.INTER_NEAREST if settings.effect == "pixelate" else cv2.INTER_LINEAR
+        obscured = cv2.resize(tiny, (right - left, bottom - top), interpolation=interpolation)
         sigma = max(3, min(right - left, bottom - top) * 0.12)
-        result[top:bottom, left:right] = cv2.GaussianBlur(obscured, (0, 0), sigma)
+        result[top:bottom, left:right] = obscured if settings.effect == "pixelate" else cv2.GaussianBlur(obscured, (0, 0), sigma)
     return result
 
 

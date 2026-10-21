@@ -32,5 +32,7 @@ Qt license texts in `blur_all/assets/qt-licenses` come from <https://github.com/
 
 `tests/assets/astronaut.jpg` is a resized JPEG of the NASA astronaut Eileen Collins photograph distributed as `astronaut.png` by scikit-image. The original photograph is in the public domain as a NASA image.
 
+The workspace screenshot in `docs/workspace.png` uses this image in a generated demonstration clip.
+
 Source: <https://github.com/scikit-image/scikit-image/blob/v0.19.3/skimage/data/astronaut.png>.
 Attribution and provenance: <https://scikit-image.org/docs/stable/api/skimage.data.html#skimage.data.astronaut>.

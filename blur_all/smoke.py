@@ -6,6 +6,7 @@ import time
 
 import cv2
 import numpy as np
+from PySide6.QtCore import QUrl
 
 
 def smoke_test(window, app):
@@ -50,7 +51,8 @@ def smoke_test(window, app):
                 raise RuntimeError("Incomplete output")
         finally:
             capture.release()
-        # Release the source before Windows tries to remove its temporary directory.
-        if window.capture is not None:
-            window.capture.release()
-            window.capture = None
+        # Release both decoders before Windows removes the temporary source video.
+        window.stop_preview()
+        window.player.stop()
+        window.player.setSource(QUrl())
+        app.processEvents()

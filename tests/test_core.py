@@ -176,6 +176,29 @@ def test_detection_hold_expires_and_resets_on_scene_cut():
     assert hold.update([], np.full_like(frame, 255)) == []
 
 
+def test_motion_tracking_follows_a_face_during_detection_dropout():
+    hold = FaceHold(4)
+    first = np.zeros((160, 240, 3), np.uint8)
+    texture = np.random.default_rng(42).integers(0, 256, (60, 60, 3), np.uint8)
+    first[40:100, 40:100] = texture
+    second = np.zeros_like(first)
+    second[45:105, 52:112] = texture
+    hold.update([(40, 40, 60, 60)], first)
+    box = hold.update([], second)[0]
+    assert box[0] == pytest.approx(52, abs=2)
+    assert box[1] == pytest.approx(45, abs=2)
+
+
+@pytest.mark.parametrize("effect", ["pixelate", "solid"])
+def test_mask_effects_change_only_the_selected_region(effect):
+    image = np.random.default_rng(4).integers(0, 256, (100, 100, 3), np.uint8)
+    result = blur_frame(image, [], Settings(effect=effect, manual_regions=((0.2, 0.2, 0.4, 0.4),)))
+    assert np.array_equal(result[:20], image[:20])
+    assert not np.array_equal(result[20:60, 20:60], image[20:60, 20:60])
+    if effect == "solid":
+        assert np.all(result[20:60, 20:60] == 18)
+
+
 def test_bad_input_is_reported(tmp_path):
     broken = tmp_path / "bad.mp4"
     broken.write_bytes(b"not a video")

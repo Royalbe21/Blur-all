@@ -31,6 +31,8 @@ def main():
     import shutil
 
     shutil.copyfile(ROOT / "README.md", ROOT / "dist" / "BlurAll" / "README.md")
+    shutil.copyfile(ROOT / "THIRD_PARTY_NOTICES.md", ROOT / "dist" / "BlurAll" / "THIRD_PARTY_NOTICES.md")
+    shutil.copytree(ROOT / "docs", ROOT / "dist" / "BlurAll" / "docs", dirs_exist_ok=True)
     print("Built dist/BlurAll/BlurAll.exe. Distribute the ENTIRE BlurAll folder.")
 
 

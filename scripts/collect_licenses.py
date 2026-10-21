@@ -12,7 +12,7 @@ def collect_licenses(output: Path, root: Path, ffmpeg: Path):
     shutil.copyfile(root / "THIRD_PARTY_NOTICES.md", destination / "THIRD_PARTY_NOTICES.md")
     shutil.copyfile(root / "blur_all" / "assets" / "YUNET-LICENSE.txt", destination / "YUNET-LICENSE.txt")
     shutil.copytree(root / "blur_all" / "assets" / "qt-licenses", destination / "Qt", dirs_exist_ok=True)
-    for package in ["numpy", "opencv-python-headless", "PySide6-Essentials", "shiboken6", "imageio-ffmpeg"]:
+    for package in ["numpy", "opencv-python-headless", "PySide6-Essentials", "PySide6-Addons", "shiboken6", "imageio-ffmpeg"]:
         dist = distribution(package)
         target = destination / package
         target.mkdir(exist_ok=True)

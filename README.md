@@ -2,6 +2,8 @@
 
 A Windows desktop application that blurs detected faces in videos. Processing happens locally: no uploads, accounts, or API keys. It produces a new H.264 MP4, with optional AAC audio, and never overwrites an existing file.
 
+![Blur All video workspace](docs/workspace.png)
+
 ## Use on Windows
 
 If you have a built release, extract the **whole** `BlurAll-Windows` archive and open `BlurAll.exe`. Keep the `_internal` folder beside the executable. Python and a separate FFmpeg installation are not needed for a packaged build.
@@ -10,11 +12,11 @@ To run from this source repository:
 
 1. Install 64-bit Python **3.12** (or 3.11) from python.org, including the Python launcher.
 2. Double-click `scripts\run_windows.bat`. Its first run installs the pinned dependencies into `.venv` and needs Internet access to PyPI. Subsequent app processing works offline.
-3. Click **Open video**, then scrub through frames to review the automatic blur.
-4. Adjust blur strength, detection sensitivity, or detection detail. **Small faces** inspects a larger version of each frame; **Sensitive** detects more potential faces but can also blur non-face objects.
-5. For missed faces or other private details, enable **Draw extra blur areas** and drag on the preview. These rectangles remain fixed for the **entire video**; they do not follow a moving person. Automatic detection still runs alongside them.
-6. Choose whether to keep audio and click **Export blurred video**. Pick an unused `.mp4` filename. Cancel safely at any time before completion.
-7. Review the exported file before sharing it. The completion message reports how many frames contained face detections; zero detections is not proof that the video has no faces.
+3. Click **Open video** or drag a video into the window. Use **Space** to play/pause, **Left/Right** to step one frame, or the timeline to seek. Preview speed ranges from 0.25× to 2×. Preview audio has its own mute control; muting it does not change the export.
+4. Choose **Soft blur**, **Pixelate**, or **Solid cover** in the sidebar. Adjust strength and extra face coverage. **Small faces** inspects a larger version of each frame; **Sensitive** detects more potential faces but can also cover non-face objects. **Show original** and **Detection outlines** help you review coverage.
+5. For missed faces or other private details, enable **Draw a blur area** and drag on the paused preview. **Undo** / **Ctrl+Z** removes the last area; **Clear all** removes every drawn area. These rectangles remain fixed for the **entire video**; they do not follow a moving person. Automatic detection still runs alongside them.
+6. Choose whether to **Keep original audio** and click **Export video**. Pick an unused `.mp4` filename. Processing speed and an estimated time remaining appear while encoding. Cancel safely at any time before completion.
+7. Use **Review export** to open the completed file in your default player, then check it before sharing. The completion message reports how many frames contained face detections; zero detections is not proof that the video has no faces.
 
 ## Build the Windows program
 
@@ -55,8 +57,8 @@ The model is bundled and its SHA-256 is checked on load. The application does no
 ## Format support and limitations
 
 - Common MP4, MOV, MKV, AVI, WebM, WMV, and MPEG videos work when OpenCV's bundled FFmpeg decoder supports their codec. DRM-protected, corrupt, and unsupported-codec videos cannot be processed. No program can promise support for every possible video format.
-- YuNet detection runs on **every frame**, with extra coverage around each face. Recent boxes are retained briefly to reduce flicker; a scene-change heuristic clears old boxes. This is not motion tracking or a guarantee that every face will be covered. Very small, obscured, or extreme-profile faces may be missed.
-- The preview inspects a single frame without temporal box retention. Use it for review, not as a guarantee of full-video coverage. Drawn regions apply to every frame at fixed normalized coordinates.
+- YuNet detection runs on **every export frame**, with adjustable extra coverage around each face. Optical flow follows recent boxes during brief detection dropouts, and a scene-change heuristic clears old boxes. This short-term motion fallback does not identify people and cannot guarantee that every face will be covered. Very small, obscured, or extreme-profile faces may be missed.
+- Decoding, detection, and masking for previews run on a background thread. Preview playback can skip frames to keep up on slower machines; export checks every decoded frame. Seek or step through important moments, then review the finished export. Preview imagery is limited to a 1280-pixel longest edge; exports keep the source resolution. Preview audio depends on the installed sound device and Qt's codec support; an unavailable preview audio backend does not prevent normal exports.
 - Variable frame rate inputs are normalized to the decoder's reported average frame rate. Source timestamps are not preserved, so some phone/screen recordings can have audio synchronization drift. Review the output; convert to constant frame rate first if needed.
 - Outputs are 8-bit SDR H.264 (`CRF 18`) with AAC audio when enabled. Audio is re-encoded, not bit-for-bit copied. HDR color, subtitles, chapters, alternate video tracks, and original metadata are not preserved. Odd frame dimensions are padded by one pixel for H.264 compatibility. Videos that change resolution midstream are rejected.
 - Export needs space for a temporary silent MP4 and final MP4 in the destination folder. Only the completed file appears under your chosen output name; temporary files are cleaned after cancellation and errors. A hard process crash can leave a `.blur-all-*` temporary folder for manual removal.
