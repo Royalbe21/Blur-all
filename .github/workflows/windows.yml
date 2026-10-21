@@ -1,0 +1,47 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+      - name: Test
+        run: python -m pytest -v
+      - name: Build desktop app
+        run: python scripts/build_windows.py
+      - name: Verify packaged detector, encoder, and desktop
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $app = Start-Process -FilePath 'dist/BlurAll/BlurAll.exe' -ArgumentList '--smoke-test' -PassThru
+          if (-not $app.WaitForExit(60000)) {
+            Stop-Process -Id $app.Id -Force
+            throw 'Packaged smoke test timed out'
+          }
+          $app.Refresh()
+          $errorLog = Join-Path $env:TEMP 'blur-all-smoke-error.txt'
+          if (Test-Path $errorLog) { Get-Content $errorLog }
+          if ($app.ExitCode -ne 0) { throw "Packaged smoke test failed: $($app.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlurAll-Windows
+          path: dist/BlurAll/
+          if-no-files-found: error
