@@ -189,7 +189,7 @@ def test_motion_tracking_follows_a_face_during_detection_dropout():
     assert box[1] == pytest.approx(45, abs=2)
 
 
-@pytest.mark.parametrize("effect", ["pixelate", "solid"])
+@pytest.mark.parametrize("effect", ["pixelate", "solid", "distort"])
 def test_mask_effects_change_only_the_selected_region(effect):
     image = np.random.default_rng(4).integers(0, 256, (100, 100, 3), np.uint8)
     result = blur_frame(image, [], Settings(effect=effect, manual_regions=((0.2, 0.2, 0.4, 0.4),)))
@@ -197,6 +197,58 @@ def test_mask_effects_change_only_the_selected_region(effect):
     assert not np.array_equal(result[20:60, 20:60], image[20:60, 20:60])
     if effect == "solid":
         assert np.all(result[20:60, 20:60] == 18)
+
+
+def test_distortion_is_stable_subtle_and_does_not_change_edges():
+    x, y = np.meshgrid(np.arange(160), np.arange(120))
+    image = np.stack([x, y, (x + y) // 2], axis=2).astype(np.uint8)
+    region = ((0, 0, 1, 1),)
+    mild = blur_frame(image, [], Settings(effect="distort", strength=25, manual_regions=region))
+    strong = blur_frame(image, [], Settings(effect="distort", strength=100, manual_regions=region))
+    assert np.array_equal(mild, blur_frame(image, [], Settings(effect="distort", strength=25, manual_regions=region)))
+    assert np.array_equal(mild[0], image[0])
+    assert np.array_equal(mild[:, -1], image[:, -1])
+    mild_difference = np.abs(mild.astype(float) - image).mean()
+    strong_difference = np.abs(strong.astype(float) - image).mean()
+    assert 0 < mild_difference < strong_difference
+
+
+@pytest.mark.parametrize("effect", ["pixelate", "distort"])
+def test_alternative_effects_are_used_in_real_exports(effect, video, tmp_path):
+    output = tmp_path / f"{effect}.mp4"
+    result = export_video(video, output, Settings(effect=effect, strength=80))
+    _, frames = inspect(output)
+    assert result.frames == len(frames) == 12
+    assert result.frames_with_faces == 12
+    original = inspect(video)[1][0]
+    x, y, w, h = FaceDetector().detect(original)[0]
+    difference = np.abs(frames[0][y:y+h, x:x+w].astype(float) - original[y:y+h, x:x+w]).mean()
+    assert difference > 5
+
+
+def test_balanced_tracking_exports_all_frames_and_preserves_coverage(video, tmp_path):
+    output = tmp_path / "balanced.mp4"
+    result = export_video(video, output, Settings(effect="solid", detection_interval=2))
+    _, frames = inspect(output)
+    assert result.frames == len(frames) == 12
+    assert result.frames_with_faces == 12
+    assert result.detector_frames < result.frames
+    original = inspect(video)[1][0]
+    x, y, w, h = FaceDetector().detect(original)[0]
+    for frame in frames:
+        assert np.abs(frame[y:y+h, x:x+w].astype(float) - 18).mean() < 4
+
+
+def test_pixelation_replaces_fine_texture_with_larger_blocks_at_higher_strength():
+    image = np.random.default_rng(10).integers(0, 256, (100, 150, 3), np.uint8)
+    settings = dict(effect="pixelate", manual_regions=((0, 0, 1, 1),))
+    fine = blur_frame(image, [], Settings(strength=10, **settings))
+    coarse = blur_frame(image, [], Settings(strength=90, **settings))
+    fine_colors = len(np.unique(fine.reshape(-1, 3), axis=0))
+    coarse_colors = len(np.unique(coarse.reshape(-1, 3), axis=0))
+    assert coarse_colors < fine_colors / 3
+    assert coarse_colors <= 40
+    assert np.array_equal(coarse[1, 1], coarse[5, 5])
 
 
 def test_bad_input_is_reported(tmp_path):

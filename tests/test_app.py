@@ -134,7 +134,7 @@ def test_preview_options_and_undo_are_applied_to_export_settings(app, tmp_path):
         wait_until(app, lambda: window.frame is not None)
         window.preview.regions.extend([(0.1, 0.1, 0.3, 0.3), (0.5, 0.5, 0.2, 0.2)])
         window.regions_changed()
-        window.effect.setCurrentIndex(2)
+        window.effect.setCurrentIndex(window.effect.findData("solid"))
         window.margin.setValue(50)
         window.mute.setChecked(True)
         assert window.audio.isChecked(), "Muting preview must not remove exported audio"
@@ -152,18 +152,46 @@ def test_preview_options_and_undo_are_applied_to_export_settings(app, tmp_path):
         window.close()
 
 
+def test_distortion_controls_and_tracking_modes_use_the_selected_settings(app, tmp_path):
+    source = tmp_path / "effects.avi"
+    make_clip(source)
+    window = MainWindow()
+    window.show()
+    try:
+        assert window.load_video(source)
+        wait_until(app, lambda: window.frame is not None)
+        assert window.settings().detection_interval == 1
+        window.effect.setCurrentIndex(window.effect.findData("distort"))
+        assert window.settings().effect == "distort"
+        assert window.settings().strength == 25
+        assert "recognizable" in window.effect_hint.text()
+        window.strength.setValue(15)
+        window.effect.setCurrentIndex(window.effect.findData("pixelate"))
+        assert window.settings().strength == 80
+        assert window.strength_caption.text() == "Block size"
+        window.effect.setCurrentIndex(window.effect.findData("distort"))
+        assert window.settings().strength == 15
+        window.tracking_mode.setCurrentIndex(window.tracking_mode.findData(4))
+        assert window.settings().detection_interval == 4
+        assert "missed" in window.tracking_hint.text()
+        window.tracking_mode.setCurrentIndex(window.tracking_mode.findData(1))
+        assert "every frame" in window.tracking_hint.text()
+    finally:
+        window.close()
+
+
 def test_seeking_ignores_old_frames_and_keeps_ui_responsive(app, tmp_path, monkeypatch):
     from PySide6.QtCore import QTimer
     import blur_all.preview as preview_module
 
-    original_detector = preview_module.FaceDetector
+    original_analyzer = preview_module.FaceAnalyzer
 
-    class SlowDetector(original_detector):
-        def detect(self, frame):
+    class SlowAnalyzer(original_analyzer):
+        def analyze(self, frame):
             time.sleep(0.1)
-            return super().detect(frame)
+            return super().analyze(frame)
 
-    monkeypatch.setattr(preview_module, "FaceDetector", SlowDetector)
+    monkeypatch.setattr(preview_module, "FaceAnalyzer", SlowAnalyzer)
     source = tmp_path / "seeking.avi"
     make_clip(source, 30)
     window = MainWindow()

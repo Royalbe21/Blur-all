@@ -17,6 +17,8 @@ import cv2
 import imageio_ffmpeg
 import numpy as np
 
+from blur_all.tracking import FaceTracker, overlap
+
 MODEL_PATH = Path(__file__).parent / "assets" / "face_detection_yunet_2023mar.onnx"
 MODEL_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
 Box = tuple[int, int, int, int]  # x, y, width, height
@@ -52,6 +54,7 @@ class Settings:
     keep_audio: bool = True
     manual_regions: tuple[Region, ...] = ()
     effect: str = "blur"
+    detection_interval: int = 1
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,7 @@ class ExportResult:
     path: Path
     frames: int
     frames_with_faces: int
+    detector_frames: int = 0
 
 
 def open_video(path: Path) -> cv2.VideoCapture:
@@ -109,77 +113,42 @@ class FaceDetector:
         return result
 
 
-def overlap(a: Box, b: Box) -> float:
-    x, y = max(a[0], b[0]), max(a[1], b[1])
-    right, bottom = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
-    area = max(0, right - x) * max(0, bottom - y)
-    return area / max(1, a[2] * a[3] + b[2] * b[3] - area)
+# Kept for callers using the original tracker name.
+FaceHold = FaceTracker
 
 
-class FaceHold:
-    """Follow recent boxes with optical flow during short detection dropouts."""
+@dataclass(frozen=True)
+class FrameAnalysis:
+    boxes: list[Box]
+    did_detect: bool
+    detected_faces: int
 
-    def __init__(self, frames: int):
-        self.frames = frames
-        self.previous: list[tuple[Box, int]] = []
-        self.last_thumbnail: np.ndarray | None = None
-        self.last_gray: np.ndarray | None = None
 
-    def _move_boxes(self, gray: np.ndarray, scale: float, width: int, height: int):
-        if self.last_gray is None or self.last_gray.shape != gray.shape or not self.previous:
-            return self.previous
-        mask = np.zeros_like(gray)
-        for (x, y, w, h), _ in self.previous:
-            left, top = max(0, round(x * scale)), max(0, round(y * scale))
-            right, bottom = min(gray.shape[1], round((x + w) * scale)), min(gray.shape[0], round((y + h) * scale))
-            mask[top:bottom, left:right] = 255
-        points = cv2.goodFeaturesToTrack(self.last_gray, 200, 0.01, 3, mask=mask)
-        if points is None:
-            return self.previous
-        moved, status, _ = cv2.calcOpticalFlowPyrLK(self.last_gray, gray, points, None)
-        if moved is None or status is None:
-            return self.previous
-        returned, back_status, _ = cv2.calcOpticalFlowPyrLK(gray, self.last_gray, moved, None)
-        if returned is None or back_status is None:
-            return self.previous
-        before, after = points.reshape(-1, 2) / scale, moved.reshape(-1, 2) / scale
-        valid = (status.ravel() == 1) & (back_status.ravel() == 1)
-        valid &= np.linalg.norm(points.reshape(-1, 2) - returned.reshape(-1, 2), axis=1) < 1.5
-        result = []
-        for box, ttl in self.previous:
-            x, y, w, h = box
-            inside = valid & (before[:, 0] >= x) & (before[:, 0] <= x + w)
-            inside &= (before[:, 1] >= y) & (before[:, 1] <= y + h)
-            if inside.sum() >= 4:
-                shifts = after[inside] - before[inside]
-                dx, dy = np.median(shifts, axis=0)
-                # Reject implausible jumps; short-term flow is only a fallback.
-                if abs(dx) <= max(20, w * 0.75) and abs(dy) <= max(20, h * 0.75):
-                    left, top = max(0, round(x + dx)), max(0, round(y + dy))
-                    right, bottom = min(width, round(x + w + dx)), min(height, round(y + h + dy))
-                    if right > left and bottom > top:
-                        box = (left, top, right - left, bottom - top)
-            result.append((box, ttl))
-        return result
+class FaceAnalyzer:
+    """Shared preview/export detection scheduling with same-frame recovery."""
 
-    def update(self, boxes: list[Box], frame: np.ndarray) -> list[Box]:
-        height, width = frame.shape[:2]
-        scale = min(1.0, 640 / max(width, height))
-        gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (max(1, round(width * scale)), max(1, round(height * scale))))
-        thumbnail = cv2.resize(gray, (32, 32))
-        if self.last_thumbnail is not None:
-            change = np.abs(thumbnail.astype(float) - self.last_thumbnail).mean()
-            if change > 35:  # Avoid carrying old boxes over a hard scene cut.
-                self.previous.clear()
-        self.last_thumbnail = thumbnail
-        predicted = self._move_boxes(gray, scale, width, height)
-        self.last_gray = gray
-        retained = [
-            (old, ttl - 1) for old, ttl in predicted
-            if ttl > 1 and not any(overlap(old, new) > 0.2 for new in boxes)
-        ]
-        self.previous = [(box, self.frames) for box in boxes] + retained
-        return [box for box, _ in self.previous]
+    def __init__(self, confidence=0.6, max_size=960, fps=30, detection_interval=1):
+        if detection_interval not in (1, 2, 4):
+            raise ValueError("Detection interval must be 1, 2, or 4 frames.")
+        self.detector = FaceDetector(confidence, max_size)
+        self.tracker = FaceTracker(max(2, round(fps * 0.5)))
+        self.interval = detection_interval
+        self.index = 0
+        self.detector_frames = 0
+
+    def analyze(self, frame: np.ndarray) -> FrameAnalysis:
+        prepared = self.tracker.prepare(frame)
+        should_detect = self.index % self.interval == 0 or not self.tracker.tracks or prepared.scene_cut
+        detections = self.detector.detect(frame) if should_detect else None
+        boxes = self.tracker.update(detections, prepared=prepared)
+        if not should_detect and self.tracker.needs_detection:
+            # Do not wait for the scheduled check when motion cannot be trusted.
+            detections = self.detector.detect(frame)
+            boxes = self.tracker.correct(detections)
+            should_detect = True
+        self.index += 1
+        self.detector_frames += int(should_detect)
+        return FrameAnalysis(boxes, should_detect, len(detections) if detections is not None else 0)
 
 
 def blur_frame(frame: np.ndarray, boxes: list[Box], settings: Settings) -> np.ndarray:
@@ -200,13 +169,31 @@ def blur_frame(frame: np.ndarray, boxes: list[Box], settings: Settings) -> np.nd
         if settings.effect == "solid":
             result[top:bottom, left:right] = (18, 18, 18)
             continue
+        if settings.effect == "distort":
+            h, w = roi.shape[:2]
+            x, y = np.meshgrid(np.linspace(-1, 1, w, dtype=np.float32), np.linspace(-1, 1, h, dtype=np.float32))
+            falloff = np.maximum(0, 1 - x * x - y * y) ** 2
+            amount = settings.strength / 100
+            angle = 0.45 * amount * falloff
+            cosine, sine = np.cos(angle), np.sin(angle)
+            warped_x = (x * cosine - y * sine) * (1 + 0.35 * amount * falloff)
+            warped_y = (x * sine + y * cosine) * (1 - 0.15 * amount * falloff)
+            map_x = ((warped_x + 1) * (w - 1) / 2).astype(np.float32)
+            map_y = ((warped_y + 1) * (h - 1) / 2).astype(np.float32)
+            result[top:bottom, left:right] = cv2.remap(roi, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+            continue
+        if settings.effect == "pixelate":
+            h, w = roi.shape[:2]
+            block = max(3, round(min(w, h) * (0.04 + settings.strength * 0.003)))
+            tiny = cv2.resize(roi, (max(1, math.ceil(w / block)), max(1, math.ceil(h / block))), interpolation=cv2.INTER_AREA)
+            result[top:bottom, left:right] = cv2.resize(tiny, (w, h), interpolation=cv2.INTER_NEAREST)
+            continue
         # Destroy detail before smoothing; a larger strength retains fewer samples.
         samples = max(2, round(22 - settings.strength * 0.2))
         tiny = cv2.resize(roi, (min(samples, right - left), min(samples, bottom - top)), interpolation=cv2.INTER_AREA)
-        interpolation = cv2.INTER_NEAREST if settings.effect == "pixelate" else cv2.INTER_LINEAR
-        obscured = cv2.resize(tiny, (right - left, bottom - top), interpolation=interpolation)
+        obscured = cv2.resize(tiny, (right - left, bottom - top), interpolation=cv2.INTER_LINEAR)
         sigma = max(3, min(right - left, bottom - top) * 0.12)
-        result[top:bottom, left:right] = obscured if settings.effect == "pixelate" else cv2.GaussianBlur(obscured, (0, 0), sigma)
+        result[top:bottom, left:right] = cv2.GaussianBlur(obscured, (0, 0), sigma)
     return result
 
 
@@ -257,13 +244,12 @@ def export_video(
     if not destination.parent.is_dir():
         raise VideoError("The output folder does not exist.")
     _check_cancel(cancel)
-    detector = FaceDetector(settings.confidence, settings.detection_size)
     capture = open_video(source)
     encoder = None
     count = face_frames = 0
     try:
         info = video_info(capture)
-        tracker = FaceHold(max(1, round(info.fps * 0.35)))
+        analyzer = FaceAnalyzer(settings.confidence, settings.detection_size, info.fps, settings.detection_interval)
         ffmpeg = ffmpeg_executable()
         with ExitStack() as stack:
             directory = stack.enter_context(tempfile.TemporaryDirectory(prefix=".blur-all-", dir=destination.parent))
@@ -288,9 +274,9 @@ def export_video(
                             break
                         if frame.shape[:2] != (info.height, info.width):
                             raise VideoError("The video changes resolution midstream. Convert it to a fixed resolution first.")
-                        boxes = detector.detect(frame)
-                        face_frames += bool(boxes)
-                        blurred = blur_frame(frame, tracker.update(boxes, frame), settings)
+                        analysis = analyzer.analyze(frame)
+                        face_frames += bool(analysis.boxes)
+                        blurred = blur_frame(frame, analysis.boxes, settings)
                         encoder.stdin.write(blurred.tobytes())
                         count += 1
                         if count == 1 or count % max(1, round(info.fps / 5)) == 0:
@@ -336,7 +322,7 @@ def export_video(
                 destination.unlink(missing_ok=True)
                 raise
             report(count, count, "Complete")
-            return ExportResult(destination, count, face_frames)
+            return ExportResult(destination, count, face_frames, analyzer.detector_frames)
     finally:
         capture.release()
         _stop_process(encoder)

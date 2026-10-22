@@ -223,6 +223,8 @@ class MainWindow(QMainWindow):
         self.displayed_index = 0
         self.requested_index = -1
         self.export_started = 0.0
+        self.effect_strengths = {"blur": 80, "pixelate": 80, "distort": 25, "solid": 80}
+        self.current_effect = "blur"
         self.clock = QElapsedTimer()
         self.playback_base = 0
         self.timer = QTimer(self)
@@ -370,12 +372,15 @@ class MainWindow(QMainWindow):
         settings.setSpacing(10)
         settings.addWidget(label("MASK APPEARANCE", "section"))
         self.effect = QComboBox()
-        for title, key in [("Soft blur", "blur"), ("Pixelate", "pixelate"), ("Solid cover", "solid")]:
+        for title, key in [("Soft blur", "blur"), ("Pixelate / mosaic", "pixelate"), ("Slight distortion", "distort"), ("Solid cover", "solid")]:
             self.effect.addItem(title, key)
         self.effect.currentIndexChanged.connect(self.effect_changed)
         settings.addWidget(self.effect)
+        self.effect_hint = label("Smoothly obscure facial detail.", "muted")
+        settings.addWidget(self.effect_hint)
         strength_row = QHBoxLayout()
-        strength_row.addWidget(label("Strength"), 1)
+        self.strength_caption = label("Strength")
+        strength_row.addWidget(self.strength_caption, 1)
         self.strength_value = label("80%", "value")
         strength_row.addWidget(self.strength_value)
         settings.addLayout(strength_row)
@@ -407,7 +412,14 @@ class MainWindow(QMainWindow):
             self.detail.addItem(title, size)
         self.detail.currentIndexChanged.connect(self.render_preview)
         settings.addWidget(self.detail)
-        settings.addWidget(label("Every frame is checked during export. Increase sensitivity for harder-to-find faces.", "muted"))
+        self.tracking_mode = QComboBox()
+        for title, interval in [("Accurate · every frame", 1), ("Balanced · faster", 2), ("Fast · quickest", 4)]:
+            self.tracking_mode.addItem(title, interval)
+        self.tracking_mode.setToolTip("Accurate detects faces on every frame. Balanced checks every 2 frames; Fast checks every 4. Motion follows faces between checks, with an immediate check if tracking becomes unreliable. Faster modes may miss a face that appears briefly between checks.")
+        self.tracking_mode.currentIndexChanged.connect(self.tracking_changed)
+        settings.addWidget(self.tracking_mode)
+        self.tracking_hint = label("Detect on every frame; follow faces through short gaps.", "muted")
+        settings.addWidget(self.tracking_hint)
         settings.addWidget(separator())
         region_row = QHBoxLayout()
         region_row.addWidget(label("EXTRA AREAS", "section"), 1)
@@ -486,6 +498,7 @@ class MainWindow(QMainWindow):
             confidence=self.sensitivity.currentData(), detection_size=self.detail.currentData(),
             keep_audio=self.audio.isChecked(), manual_regions=tuple(self.preview.regions),
             effect=self.effect.currentData(),
+            detection_interval=self.tracking_mode.currentData(),
         )
 
     def choose_video(self):
@@ -697,7 +710,30 @@ class MainWindow(QMainWindow):
         self.render_preview()
 
     def effect_changed(self):
-        self.strength.setEnabled(self.effect.currentData() != "solid")
+        self.effect_strengths[self.current_effect] = self.strength.value()
+        effect = self.effect.currentData()
+        self.current_effect = effect
+        self.strength.blockSignals(True)
+        self.strength.setRange(30 if effect == "blur" else 5, 100)
+        self.strength.setValue(self.effect_strengths[effect])
+        self.strength.blockSignals(False)
+        self.strength.setEnabled(effect != "solid")
+        self.strength_caption.setText({"distort": "Distortion amount", "pixelate": "Block size"}.get(effect, "Strength"))
+        self.effect_hint.setText({
+            "blur": "Smoothly obscure facial detail.",
+            "pixelate": "Cover faces with adjustable mosaic blocks.",
+            "distort": "Subtle geometric warp. Faces may remain recognizable.",
+            "solid": "Replace face regions with a solid cover.",
+        }[effect])
+        self.strength_value.setText(f"{self.strength.value()}%")
+        self.render_preview()
+
+    def tracking_changed(self):
+        interval = self.tracking_mode.currentData()
+        self.tracking_hint.setText(
+            "Detect on every frame; follow faces through short gaps." if interval == 1
+            else f"Check every {interval} frames. Brief appearances between checks can be missed."
+        )
         self.render_preview()
 
     def toggle_draw(self, enabled):
@@ -810,7 +846,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self.status_title.setText("Your video is ready")
-        self.status.setText(f"{result.path.name} · Faces detected in {result.frames_with_faces:,} / {result.frames:,} frames. Review before sharing.")
+        self.status.setText(f"{result.path.name} · Faces covered in {result.frames_with_faces:,} / {result.frames:,} frames. Review before sharing.")
         self.open_output.show()
         self.review_output.show()
 

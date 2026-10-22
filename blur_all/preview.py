@@ -7,7 +7,7 @@ import threading
 import cv2
 from PySide6.QtCore import QThread, Signal
 
-from blur_all.core import FaceDetector, FaceHold, Settings, VideoError, blur_frame, open_video
+from blur_all.core import FaceAnalyzer, Settings, VideoError, blur_frame, open_video
 
 
 @dataclass
@@ -47,10 +47,9 @@ class PreviewWorker(QThread):
         generation = 0
         try:
             capture = open_video(self.source)
-            detector = None
-            detector_key = None
+            analyzer = None
+            analyzer_key = None
             cached_index, frame, boxes = -1, None, []
-            hold = FaceHold(max(1, round(self.fps * 0.35)))
             while True:
                 with self._condition:
                     self._condition.wait_for(lambda: self._stopping or self._pending is not None)
@@ -59,23 +58,21 @@ class PreviewWorker(QThread):
                     index, settings, generation = self._pending
                     self._pending = None
                 try:
-                    key = (settings.confidence, settings.detection_size)
-                    new_detector = key != detector_key
-                    if new_detector:
-                        detector = FaceDetector(*key)
-                        detector_key = key
+                    key = (settings.confidence, settings.detection_size, settings.detection_interval)
+                    reset = key != analyzer_key or index not in (cached_index, cached_index + 1)
+                    if reset:
+                        analyzer = FaceAnalyzer(key[0], key[1], self.fps, key[2])
+                        analyzer_key = key
                     if index != cached_index:
                         if index != cached_index + 1:
                             capture.set(cv2.CAP_PROP_POS_FRAMES, index)
-                            hold = FaceHold(max(1, round(self.fps * 0.35)))
                         ok, frame = capture.read()
                         if not ok:
                             raise VideoError("Could not decode this frame. Try another position.")
-                        boxes = hold.update(detector.detect(frame), frame)
+                        boxes = analyzer.analyze(frame).boxes
                         cached_index = index
-                    elif new_detector:
-                        hold = FaceHold(max(1, round(self.fps * 0.35)))
-                        boxes = hold.update(detector.detect(frame), frame)
+                    elif reset:
+                        boxes = analyzer.analyze(frame).boxes
                     processed = blur_frame(frame, boxes, settings)
                     height, width = frame.shape[:2]
                     scale = min(1.0, 1280 / max(width, height))
@@ -86,9 +83,8 @@ class PreviewWorker(QThread):
                     ))
                 except Exception as exc:
                     cached_index, frame = -1, None
-                    detector_key = None
+                    analyzer_key = None
                     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    hold = FaceHold(max(1, round(self.fps * 0.35)))
                     self.failed.emit(generation, str(exc))
         except Exception as exc:
             self.failed.emit(generation, str(exc))

@@ -1,0 +1,59 @@
+{
+  "baseline": "0029f23cbd889a76adee60f08f6d3a4622dbdc58",
+  "python": "3.12.14",
+  "opencv": "4.11.0",
+  "os": "Linux",
+  "opencv_threads": 4,
+  "frames_per_run": 60,
+  "repeats": 3,
+  "method": "Median wall time. Generated motion and known transformed face boxes; not a real-world accuracy evaluation.",
+  "fresh_detections_tracking": {
+    "baseline_ms_per_frame": 5.577568066655658,
+    "current_ms_per_frame": 1.0495049832873822,
+    "speedup": 5.314475067269282
+  },
+  "rotation_scale_detection_gaps": {
+    "baseline": {
+      "mean_box_iou": 0.9062259364153105,
+      "fraction_iou_at_least_0_75": 0.9333333333333333
+    },
+    "current": {
+      "mean_box_iou": 0.9316815124375997,
+      "fraction_iou_at_least_0_75": 0.9666666666666667
+    }
+  },
+  "detection_and_tracking_640x360": {
+    "baseline": {
+      "ms_per_frame": 11.499104383256054,
+      "fps": 86.96329441587719,
+      "detector_calls": 60,
+      "mean_box_iou": 0.9175565501097049,
+      "frames_with_iou_at_least_0_5": 60,
+      "speedup_over_baseline": 1.0
+    },
+    "accurate": {
+      "ms_per_frame": 9.640934633353027,
+      "fps": 103.72438337466555,
+      "detector_calls": 60,
+      "mean_box_iou": 0.8933393114484443,
+      "frames_with_iou_at_least_0_5": 60,
+      "speedup_over_baseline": 1.192737511514148
+    },
+    "balanced": {
+      "ms_per_frame": 5.924833450020135,
+      "fps": 168.7811156947545,
+      "detector_calls": 30,
+      "mean_box_iou": 0.9039948578506737,
+      "frames_with_iou_at_least_0_5": 60,
+      "speedup_over_baseline": 1.9408316672963988
+    },
+    "fast": {
+      "ms_per_frame": 4.086093649918135,
+      "fps": 244.73252100328997,
+      "detector_calls": 15,
+      "mean_box_iou": 0.9137312414071784,
+      "frames_with_iou_at_least_0_5": 60,
+      "speedup_over_baseline": 2.8142048049942363
+    }
+  }
+}
