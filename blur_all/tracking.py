@@ -6,6 +6,8 @@ import math
 import cv2
 import numpy as np
 
+from blur_all.masks import FaceRegion
+
 Box = tuple[int, int, int, int]
 
 
@@ -47,6 +49,7 @@ class Track:
     points: np.ndarray | None = None
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(2, np.float32))
     uncertain: int = 0
+    landmarks: np.ndarray | None = None
 
 
 class FaceTracker:
@@ -103,7 +106,7 @@ class FaceTracker:
                 used_detections.add(j)
         return matched, used_tracks, used_detections
 
-    def _correct_track(self, track, box):
+    def _correct_track(self, track, box, landmarks=None):
         previous = np.array(track.box[:2]) + np.array(track.box[2:]) / 2
         center = np.array(box[:2]) + np.array(box[2:]) / 2
         track.velocity = (center - previous).astype(np.float32)
@@ -113,9 +116,14 @@ class FaceTracker:
         track.smooth = track.smooth * (1 - alpha) + measurement * alpha
         track.box, track.quad = box, corners(box)
         track.ttl, track.uncertain, track.points = self.frames, 0, None
+        if landmarks is None:
+            track.landmarks = None
+        else:
+            measured_points = np.asarray(landmarks, np.float32)
+            track.landmarks = measured_points.copy() if track.landmarks is None else track.landmarks * (1 - alpha) + measured_points * alpha
 
-    def _add(self, box):
-        self.tracks.append(Track(self.next_id, box, self.frames, np.array(box, np.float32), corners(box)))
+    def _add(self, box, landmarks=None):
+        self.tracks.append(Track(self.next_id, box, self.frames, np.array(box, np.float32), corners(box), landmarks=None if landmarks is None else np.asarray(landmarks, np.float32).copy()))
         self.next_id += 1
 
     def _seed(self, track, prepared):
@@ -186,6 +194,8 @@ class FaceTracker:
                             track.smooth = np.array(box, np.float32)
                             track.points = target[inliers.ravel() == 1].reshape(-1, 1, 2)
                             track.uncertain = 0
+                            if track.landmarks is not None:
+                                track.landmarks = cv2.transform((track.landmarks * scale)[None], transform)[0] / scale
             if not good:
                 track.points = None
                 track.uncertain += 1
@@ -201,24 +211,27 @@ class FaceTracker:
             result.append(bounds(quad, self.last_frame.width, self.last_frame.height))
         return result
 
-    def correct(self, detections: list[Box]) -> list[Box]:
+    def regions(self) -> list[FaceRegion]:
+        return [FaceRegion(box, track.id, track.quad.copy(), None if track.landmarks is None else track.landmarks.copy()) for box, track in zip(self._outputs(), self.tracks)]
+
+    def correct(self, detections: list[Box], landmarks=None) -> list[Box]:
         """Apply an immediate detector refresh after unreliable skipped-frame flow."""
         matched, _, used = self._associate(detections)
         for i, j in matched:
-            self._correct_track(self.tracks[i], detections[j])
+            self._correct_track(self.tracks[i], detections[j], None if landmarks is None else landmarks[j])
         for j, box in enumerate(detections):
             if j not in used:
-                self._add(box)
+                self._add(box, None if landmarks is None else landmarks[j])
         return self._outputs()
 
-    def update(self, detections: list[Box] | None, frame=None, *, prepared=None) -> list[Box]:
+    def update(self, detections: list[Box] | None, frame=None, *, prepared=None, landmarks=None) -> list[Box]:
         prepared = prepared if prepared is not None else self.prepare(frame)
         self.last_frame = prepared
         self.needs_detection = False
         fresh = detections if detections is not None else []
         matched, used_tracks, used_detections = self._associate(fresh)
         for i, j in matched:
-            self._correct_track(self.tracks[i], fresh[j])
+            self._correct_track(self.tracks[i], fresh[j], None if landmarks is None else landmarks[j])
         unmatched = [track for i, track in enumerate(self.tracks) if i not in used_tracks and track.ttl > 1]
         self._propagate(unmatched, prepared)
         for i, track in enumerate(self.tracks):
@@ -227,6 +240,6 @@ class FaceTracker:
         self.tracks = [track for track in self.tracks if track.ttl > 0]
         for j, box in enumerate(fresh):
             if j not in used_detections:
-                self._add(box)
+                self._add(box, None if landmarks is None else landmarks[j])
         self.last_gray = prepared.gray
         return self._outputs()

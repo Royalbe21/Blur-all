@@ -180,6 +180,64 @@ def test_distortion_controls_and_tracking_modes_use_the_selected_settings(app, t
         window.close()
 
 
+def test_face_shape_and_export_controls_drive_a_real_mkv_export(app, tmp_path):
+    source = tmp_path / "export-options.avi"
+    make_clip(source, 6)
+    window = MainWindow()
+    window.show()
+    try:
+        assert window.load_video(source)
+        wait_until(app, lambda: window.frame is not None)
+        assert window.settings().mask_shape == "face"
+        window.mask_shape.setCurrentIndex(window.mask_shape.findData("oval"))
+        window.edge_softness.setValue(12)
+        assert window.settings().mask_shape == "oval"
+        assert window.settings().edge_softness == 0.12
+        window.controls.setCurrentIndex(1)
+        assert window.audio.isVisible()
+        window.output_format.setCurrentIndex(window.output_format.findData("mkv"))
+        window.export_quality.setCurrentIndex(window.export_quality.findData("small"))
+        window.resolution.setCurrentIndex(window.resolution.findData("720p"))
+        window.audio.setChecked(False)
+        assert not window.audio_bitrate.isEnabled()
+        assert "MKV" in window.export_summary.text()
+        assert "160 × 120" in window.export_summary.text()
+        assert "No audio" in window.export_summary.text()
+        output = tmp_path / "desktop.mkv"
+        window.start_export(output)
+        wait_until(app, lambda: window.worker is None, timeout=15)
+        assert output.read_bytes().startswith(b'\x1a\x45\xdf\xa3')
+        assert window.progress.value() == 100
+        capture = cv2.VideoCapture(str(output))
+        assert capture.isOpened()
+        assert capture.get(cv2.CAP_PROP_FRAME_COUNT) == 6
+        capture.release()
+    finally:
+        if window.worker is not None:
+            window.worker.cancel_event.set()
+            wait_until(app, lambda: window.worker is None)
+        window.close()
+
+
+def test_preview_mask_outlines_follow_the_face_contour(app, video):
+    window = MainWindow()
+    window.show()
+    try:
+        assert window.load_video(video)
+        wait_until(app, lambda: bool(window.preview.detection_regions))
+        contour = window.preview.detection_regions[0]
+        assert contour.shape == (64, 2)
+        assert np.isfinite(contour).all()
+        window.outlines.setChecked(True)
+        app.processEvents()
+        assert window.preview.show_detections
+        assert not window.preview.grab().isNull()
+        window.mask_shape.setCurrentIndex(window.mask_shape.findData("rectangle"))
+        wait_until(app, lambda: window.preview.detection_regions[0].shape == (4, 2))
+    finally:
+        window.close()
+
+
 def test_seeking_ignores_old_frames_and_keeps_ui_responsive(app, tmp_path, monkeypatch):
     from PySide6.QtCore import QTimer
     import blur_all.preview as preview_module

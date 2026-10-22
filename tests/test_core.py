@@ -1,4 +1,3 @@
-from pathlib import Path
 import subprocess
 import threading
 
@@ -10,25 +9,6 @@ from blur_all.core import (
     Cancelled, FaceDetector, FaceHold, Settings, VideoError,
     blur_frame, export_video, ffmpeg_executable, open_video, video_info,
 )
-
-
-@pytest.fixture
-def face():
-    image = cv2.imread(str(Path(__file__).parent / "assets" / "astronaut.jpg"))
-    assert image is not None
-    return image
-
-
-@pytest.fixture
-def video(tmp_path, face):
-    path = tmp_path / "source.avi"
-    height, width = face.shape[:2]
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10, (width, height))
-    assert writer.isOpened()
-    for _ in range(12):
-        writer.write(face)
-    writer.release()
-    return path
 
 
 def inspect(path):

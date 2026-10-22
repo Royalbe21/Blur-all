@@ -45,3 +45,16 @@ jobs:
           name: BlurAll-Windows
           path: dist/BlurAll/
           if-no-files-found: error
+      - name: Build Windows installer
+        run: python scripts/build_installer.py
+      - name: Verify install, launch, export, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'dist/installer/BlurAll-Setup-*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Installer is missing' }
+          ./scripts/test_installer.ps1 -Installer $installer.FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlurAll-Installer
+          path: dist/installer/BlurAll-Setup-*.exe
+          if-no-files-found: error

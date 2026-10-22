@@ -8,6 +8,7 @@ import cv2
 from PySide6.QtCore import QThread, Signal
 
 from blur_all.core import FaceAnalyzer, Settings, VideoError, blur_frame, open_video
+from blur_all.masks import face_polygon
 
 
 @dataclass
@@ -49,7 +50,7 @@ class PreviewWorker(QThread):
             capture = open_video(self.source)
             analyzer = None
             analyzer_key = None
-            cached_index, frame, boxes = -1, None, []
+            cached_index, frame, boxes, faces = -1, None, [], []
             while True:
                 with self._condition:
                     self._condition.wait_for(lambda: self._stopping or self._pending is not None)
@@ -69,17 +70,19 @@ class PreviewWorker(QThread):
                         ok, frame = capture.read()
                         if not ok:
                             raise VideoError("Could not decode this frame. Try another position.")
-                        boxes = analyzer.analyze(frame).boxes
+                        analysis = analyzer.analyze(frame)
+                        boxes, faces = analysis.boxes, analysis.faces
                         cached_index = index
                     elif reset:
-                        boxes = analyzer.analyze(frame).boxes
-                    processed = blur_frame(frame, boxes, settings)
+                        analysis = analyzer.analyze(frame)
+                        boxes, faces = analysis.boxes, analysis.faces
+                    processed = blur_frame(frame, boxes, settings, faces=faces)
                     height, width = frame.shape[:2]
                     scale = min(1.0, 1280 / max(width, height))
                     size = (max(1, round(width * scale)), max(1, round(height * scale)))
                     self.ready.emit(PreviewFrame(
                         index, generation, cv2.resize(frame, size), cv2.resize(processed, size),
-                        boxes, [(x / width, y / height, w / width, h / height) for x, y, w, h in boxes],
+                        boxes, [face_polygon(face, settings.margin, settings.mask_shape) / [width, height] for face in faces],
                     ))
                 except Exception as exc:
                     cached_index, frame = -1, None

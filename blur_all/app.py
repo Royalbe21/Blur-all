@@ -14,10 +14,10 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea,
-    QSlider, QVBoxLayout, QWidget,
+    QSlider, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from blur_all.core import Cancelled, FaceDetector, Settings, VideoError, export_video, open_video, video_info
+from blur_all.core import Cancelled, FaceDetector, Settings, VideoError, export_dimensions, export_video, open_video, video_info
 from blur_all.preview import PreviewWorker
 
 
@@ -63,6 +63,9 @@ QScrollBar:vertical { background: #191b23; width: 7px; }
 QScrollBar::handle:vertical { background: #484659; min-height: 20px; border-radius: 3px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QToolTip { background: #252834; color: #ececf3; border: 1px solid #5c5573; padding: 5px; }
+QTabWidget::pane { border: none; background: #191b23; }
+QTabBar::tab { background: #20222c; color: #999caf; padding: 11px 25px; border-bottom: 2px solid #20222c; }
+QTabBar::tab:selected { color: #d9ceff; background: #191b23; border-bottom-color: #b5a0ee; }
 """
 
 
@@ -151,8 +154,8 @@ class Preview(QLabel):
         painter.drawPixmap(area.toRect(), self.picture)
         if self.show_detections:
             painter.setPen(QPen(QColor("#88d7ba"), 1))
-            for x, y, w, h in self.detection_regions:
-                painter.drawRect(QRectF(area.x() + x * area.width(), area.y() + y * area.height(), w * area.width(), h * area.height()))
+            for polygon in self.detection_regions:
+                painter.drawPolygon(QPolygonF([QPointF(area.x() + x * area.width(), area.y() + y * area.height()) for x, y in polygon]))
         painter.setPen(QPen(QColor("#c5b5ff"), 2, Qt.PenStyle.DashLine))
         for x, y, w, h in self.regions:
             painter.drawRect(QRectF(area.x() + x * area.width(), area.y() + y * area.height(), w * area.width(), h * area.height()))
@@ -300,7 +303,7 @@ class MainWindow(QMainWindow):
         self.original.setToolTip("Compare with the original. Exports always use your mask settings.")
         self.original.toggled.connect(self.show_current_frame)
         view_row.addWidget(self.original)
-        self.outlines = QCheckBox("Detection outlines")
+        self.outlines = QCheckBox("Mask outlines")
         self.outlines.toggled.connect(self.toggle_outlines)
         view_row.addWidget(self.outlines)
         view_row.addStretch()
@@ -365,9 +368,10 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.controls = QWidget()
-        self.controls.setObjectName("sidebarContent")
-        settings = QVBoxLayout(self.controls)
+        self.controls = QTabWidget()
+        mask_content = QWidget()
+        mask_content.setObjectName("sidebarContent")
+        settings = QVBoxLayout(mask_content)
         settings.setContentsMargins(18, 18, 18, 18)
         settings.setSpacing(10)
         settings.addWidget(label("MASK APPEARANCE", "section"))
@@ -378,6 +382,12 @@ class MainWindow(QMainWindow):
         settings.addWidget(self.effect)
         self.effect_hint = label("Smoothly obscure facial detail.", "muted")
         settings.addWidget(self.effect_hint)
+        self.mask_shape = QComboBox()
+        for title, key in [("Fit face contour", "face"), ("Oval", "oval"), ("Rectangle", "rectangle")]:
+            self.mask_shape.addItem(title, key)
+        self.mask_shape.setToolTip("Face contours use the eyes and mouth to orient coverage around the forehead, cheeks, and jaw. Review extreme profiles and missed faces.")
+        self.mask_shape.currentIndexChanged.connect(self.render_preview)
+        settings.addWidget(self.mask_shape)
         strength_row = QHBoxLayout()
         self.strength_caption = label("Strength")
         strength_row.addWidget(self.strength_caption, 1)
@@ -391,15 +401,26 @@ class MainWindow(QMainWindow):
         settings.addWidget(self.strength)
         margin_row = QHBoxLayout()
         margin_row.addWidget(label("Extra face coverage"), 1)
-        self.margin_value = label("30%", "value")
+        self.margin_value = label("15%", "value")
         margin_row.addWidget(self.margin_value)
         settings.addLayout(margin_row)
         self.margin = QSlider(Qt.Orientation.Horizontal)
         self.margin.setRange(0, 70)
-        self.margin.setValue(30)
-        self.margin.setToolTip("Expand each detected box by this fraction on every side.")
+        self.margin.setValue(15)
+        self.margin.setToolTip("Expand the face contour for more forehead, chin, and side coverage.")
         self.margin.valueChanged.connect(self.margin_changed)
         settings.addWidget(self.margin)
+        edge_row = QHBoxLayout()
+        edge_row.addWidget(label("Soft edge"), 1)
+        self.edge_value = label("8%", "value")
+        edge_row.addWidget(self.edge_value)
+        settings.addLayout(edge_row)
+        self.edge_softness = QSlider(Qt.Orientation.Horizontal)
+        self.edge_softness.setRange(0, 25)
+        self.edge_softness.setValue(8)
+        self.edge_softness.setToolTip("Blend outside the mask contour while keeping its interior fully covered.")
+        self.edge_softness.valueChanged.connect(self.edge_changed)
+        settings.addWidget(self.edge_softness)
         settings.addWidget(separator())
         settings.addWidget(label("FACE DETECTION", "section"))
         self.sensitivity = QComboBox()
@@ -426,7 +447,7 @@ class MainWindow(QMainWindow):
         self.region_count = label("0", "value")
         region_row.addWidget(self.region_count)
         settings.addLayout(region_row)
-        self.draw = QCheckBox("Draw a blur area")
+        self.draw = QCheckBox("Draw an extra area")
         self.draw.toggled.connect(self.toggle_draw)
         settings.addWidget(self.draw)
         settings.addWidget(label("Drag on the paused preview. Drawn areas stay fixed for the entire video.", "muted"))
@@ -439,17 +460,59 @@ class MainWindow(QMainWindow):
         region_buttons.addWidget(self.undo)
         region_buttons.addWidget(self.clear)
         settings.addLayout(region_buttons)
-        settings.addWidget(separator())
-        settings.addWidget(label("EXPORT", "section"))
-        self.audio = QCheckBox("Keep original audio")
-        self.audio.setChecked(True)
-        settings.addWidget(self.audio)
-        settings.addWidget(label("MP4  ·  H.264 video  ·  AAC audio", "muted"))
         settings.addStretch()
         settings.addWidget(label("Review before sharing. Small or obscured faces can be missed.", "muted"))
+        scroll.setWidget(mask_content)
+        self.controls.addTab(scroll, "Masks")
+
+        export_content = QWidget()
+        export_content.setObjectName("sidebarContent")
+        export_layout = QVBoxLayout(export_content)
+        export_layout.setContentsMargins(18, 18, 18, 18)
+        export_layout.setSpacing(12)
+        export_layout.addWidget(label("FILE FORMAT", "section"))
+        self.output_format = QComboBox()
+        for title, key in [("MP4 · widest compatibility", "mp4"), ("MOV · QuickTime", "mov"), ("MKV · Matroska", "mkv")]:
+            self.output_format.addItem(title, key)
+        export_layout.addWidget(self.output_format)
+        export_layout.addWidget(label("VIDEO QUALITY", "section"))
+        self.export_quality = QComboBox()
+        for title, key in [("High quality · larger files", "high"), ("Balanced quality & size", "balanced"), ("Smaller file size", "small")]:
+            self.export_quality.addItem(title, key)
+        export_layout.addWidget(self.export_quality)
+        export_layout.addWidget(label("OUTPUT RESOLUTION", "section"))
+        self.resolution = QComboBox()
+        for title, key in [("Original size", "source"), ("1080p", "1080p"), ("720p", "720p"), ("480p", "480p")]:
+            self.resolution.addItem(title, key)
+        export_layout.addWidget(self.resolution)
+        export_layout.addWidget(label("Keep aspect ratio. Portrait videos stay portrait; smaller sources are never enlarged.", "muted"))
+        export_layout.addWidget(separator())
+        export_layout.addWidget(label("AUDIO", "section"))
+        self.audio = QCheckBox("Keep original audio")
+        self.audio.setChecked(True)
+        export_layout.addWidget(self.audio)
+        self.audio_bitrate = QComboBox()
+        for value in (128, 192, 256):
+            self.audio_bitrate.addItem(f"AAC · {value} kbps", value)
+        self.audio_bitrate.setCurrentIndex(1)
+        export_layout.addWidget(self.audio_bitrate)
+        export_layout.addWidget(label("Audio is re-encoded to AAC. Preview mute does not change the export.", "muted"))
+        export_layout.addWidget(separator())
+        export_layout.addWidget(label("EXPORT SUMMARY", "section"))
+        self.export_summary = label("Open a video to see the output dimensions.", "muted")
+        export_layout.addWidget(self.export_summary)
+        export_layout.addStretch()
+        export_layout.addWidget(label("A new file is created. Your original is kept intact.", "muted"))
+        export_scroll = QScrollArea()
+        export_scroll.setWidgetResizable(True)
+        export_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        export_scroll.setWidget(export_content)
+        self.controls.addTab(export_scroll, "Export")
+        for control in [self.output_format, self.export_quality, self.resolution, self.audio_bitrate]:
+            control.currentIndexChanged.connect(self.update_export_summary)
+        self.audio.toggled.connect(self.update_export_summary)
         self.controls.setEnabled(False)
-        scroll.setWidget(self.controls)
-        side_layout.addWidget(scroll)
+        side_layout.addWidget(self.controls)
         body.addWidget(side)
         outer.addLayout(body, 1)
 
@@ -499,6 +562,9 @@ class MainWindow(QMainWindow):
             keep_audio=self.audio.isChecked(), manual_regions=tuple(self.preview.regions),
             effect=self.effect.currentData(),
             detection_interval=self.tracking_mode.currentData(),
+            mask_shape=self.mask_shape.currentData(), edge_softness=self.edge_softness.value() / 100,
+            output_format=self.output_format.currentData(), export_quality=self.export_quality.currentData(),
+            resolution=self.resolution.currentData(), audio_bitrate=self.audio_bitrate.currentData(),
         )
 
     def choose_video(self):
@@ -553,12 +619,13 @@ class MainWindow(QMainWindow):
         self.open_output.hide()
         self.review_output.hide()
         self.status_title.setText("Preview and adjust")
-        self.status.setText("Play the preview, adjust the mask, then export a new MP4.")
+        self.status.setText("Review face coverage in Masks, then choose your output in Export.")
         self.preview_note.setText("Preview audio · on")
         self.player.setSource(QUrl.fromLocalFile(str(self.source)))
         self.set_busy(False)
         self.start_preview()
         self.update_time(0)
+        self.update_export_summary()
         return True
 
     def start_preview(self):
@@ -709,6 +776,18 @@ class MainWindow(QMainWindow):
         self.margin_value.setText(f"{value}%")
         self.render_preview()
 
+    def edge_changed(self, value):
+        self.edge_value.setText(f"{value}%")
+        self.render_preview()
+
+    def update_export_summary(self, *_):
+        self.audio_bitrate.setEnabled(self.audio.isChecked())
+        if self.info is None:
+            return
+        width, height = export_dimensions(self.info.width, self.info.height, self.resolution.currentData())
+        audio = f"AAC {self.audio_bitrate.currentData()} kbps" if self.audio.isChecked() else "No audio"
+        self.export_summary.setText(f"{self.output_format.currentData().upper()} · H.264\n{width} × {height} · {self.info.fps:.2f} fps\n{self.export_quality.currentText()}\n{audio}")
+
     def effect_changed(self):
         self.effect_strengths[self.current_effect] = self.strength.value()
         effect = self.effect.currentData()
@@ -772,17 +851,18 @@ class MainWindow(QMainWindow):
         if self.source is None or self.worker is not None:
             return
         self.pause()
-        candidate = self.source.with_name(self.source.stem + "_blurred.mp4")
+        extension = self.output_format.currentData()
+        candidate = self.source.with_name(self.source.stem + "_protected." + extension)
         suffix = 2
         while candidate.exists():
-            candidate = self.source.with_name(f"{self.source.stem}_blurred_{suffix}.mp4")
+            candidate = self.source.with_name(f"{self.source.stem}_protected_{suffix}.{extension}")
             suffix += 1
-        filename, _ = QFileDialog.getSaveFileName(self, "Save your protected video", str(candidate), "MP4 video (*.mp4)", options=QFileDialog.Option.DontConfirmOverwrite)
+        filename, _ = QFileDialog.getSaveFileName(self, "Save your protected video", str(candidate), f"{extension.upper()} video (*.{extension})", options=QFileDialog.Option.DontConfirmOverwrite)
         if not filename:
             return
         output = Path(filename)
-        if output.suffix.lower() != ".mp4":
-            output = output.with_suffix(".mp4")
+        if output.suffix.lower() != "." + extension:
+            output = output.with_suffix("." + extension)
         if output.exists() or output.resolve() == self.source.resolve():
             QMessageBox.warning(self, "Choose a new file", "Choose an unused filename. Existing videos are never overwritten.")
             return
